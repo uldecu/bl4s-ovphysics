@@ -1,39 +1,32 @@
-﻿"""
+
+"""
 Muon Energy Loss — T9 / BL4S
 p = 5 GeV/c
-
-Physics active during propagation:
-  - Bethe-Bloch (full, with Sternheimer density + shell correction)
-  - Bremsstrahlung  → added to dE/dx in ODE, shifts KE curve down
-  - Landau          → stochastic fluctuation sampled per layer,
-                      KE curve shows one realisation (MPV track)
-  - Birks quenching → scintillator KE_out corrected to measured signal
+White background, black line, no table panel.
 """
 
 import numpy as np
 from scipy import integrate
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 import warnings
 warnings.filterwarnings("ignore")
 
 RNG       = np.random.default_rng(42)
-MUON_MASS = 105.66    # MeV/c²
-ME        = 0.511     # MeV
-K         = 0.307075  # MeV cm²/mol
+MUON_MASS = 105.66
+ME        = 0.511
+K         = 0.307075
 
-# ── Materials ─────────────────────────────────────────────
 class Material:
     def __init__(self, name, Z, A, rho, I_eV,
                  s_a, s_k, s_x0, s_x1, s_Cbar, s_d0,
                  X0_cm, kB=0.0):
         self.name = name
         self.Z = Z; self.A = A; self.rho = rho
-        self.I = I_eV * 1e-6          # eV → MeV
+        self.I = I_eV * 1e-6
         self.s_a=s_a; self.s_k=s_k; self.s_x0=s_x0
         self.s_x1=s_x1; self.s_Cbar=s_Cbar; self.s_d0=s_d0
         self.X0_cm = X0_cm
-        self.kB    = kB               # Birks constant g/(cm²·MeV)
+        self.kB    = kB
 
 MAT = {
     "Fe":    Material("Fe",    26,55.85, 7.87,  286.0,
@@ -45,8 +38,6 @@ MAT = {
     "Air":   Material("Air",    7,14.5,  1.2e-3, 85.7,
                       0.10914,3.3994, 1.7418,4.2759,11.948,0.00,30420.),
 }
-
-# ── Physics ───────────────────────────────────────────────
 
 def _kinematics(KE, mass):
     E    = KE + mass
@@ -73,7 +64,6 @@ def wmax(bg, mass):
     return 2*ME*bg**2 / (1 + 2*gam*ME/mass + (ME/mass)**2)
 
 def dEdx_ionisation(KE, mass, mat):
-    """Bethe-Bloch with Sternheimer δ and shell correction."""
     if mat.rho < 1e-6 or KE <= 0: return 0.0
     bg, beta, gam = _kinematics(KE, mass)
     Wm = wmax(bg, mass)
@@ -85,10 +75,6 @@ def dEdx_ionisation(KE, mass, mat):
                 - beta**2 - delta/2 - shell), 0.0)
 
 def dEdx_brems(KE, mass, mat):
-    """
-    Bremsstrahlung for muons: dE/dx_rad ≈ E·(me/mμ)²·ρ/X0
-    Active in ODE — shifts the KE curve.
-    """
     if mat.X0_cm <= 0 or mat.rho < 1e-6: return 0.0
     E = KE + mass
     return max(E * (ME/mass)**2 * mat.rho / mat.X0_cm, 0.0)
@@ -97,81 +83,34 @@ def dEdx_total(KE, mass, mat):
     return dEdx_ionisation(KE, mass, mat) + dEdx_brems(KE, mass, mat)
 
 def landau_sample(KE, mass, mat, dx):
-    """
-    Sample one Landau-fluctuated energy loss for layer dx [cm].
-    Uses Vavilov κ-parameter to decide regime:
-      κ < 0.01 → Landau limit  (thin layers)
-      κ > 10   → Gaussian limit (thick layers)
-      otherwise → interpolate
-    Returns sampled ΔE [MeV].
-    """
-    if mat.rho < 1e-4 or dx <= 0 or KE <= 0:
-        return 0.0
+    if mat.rho < 1e-4 or dx <= 0 or KE <= 0: return 0.0
     bg, beta, _ = _kinematics(KE, mass)
-    xi   = K/2 * mat.Z/mat.A * mat.rho / beta**2 * dx   # MeV
+    xi   = K/2 * mat.Z/mat.A * mat.rho / beta**2 * dx
     Wm   = wmax(bg, mass)
-    if Wm <= mat.I or xi <= 0:
-        return 0.0
+    if Wm <= mat.I or xi <= 0: return 0.0
     delta = sternheimer(bg, mat)
-
-    # MPV (most probable value)
     mpv = xi * (np.log(2*ME*bg**2*xi/mat.I**2) + 0.2 - beta**2 - delta)
     mpv = max(mpv, 0.0)
-
-    # Vavilov kappa
     kappa = xi / Wm
-
     if kappa > 10:
-        # Gaussian regime
         sigma_g = np.sqrt(xi * Wm * (1 - beta**2/2))
         sample  = RNG.normal(mpv, sigma_g)
     else:
-        # Landau regime: sample from Landau distribution
-        # Landau PDF peak at λ=−0.222, FWHM ≈ 4xi
-        # We use the standard trick: sample λ from Landau(0,1)
-        # then ΔE = MPV + xi * λ
-        # Landau(0,1) sample via inverse CDF approximation (Moyal)
         u = RNG.uniform(1e-6, 1-1e-6)
-        # Moyal approximation to Landau quantile
         lam = -np.log(-np.log(u)) - 0.5772
-        sample = mpv + xi * lam * 0.8   # 0.8 empirical scale
-
-    # Clamp: can't lose more than KE, can't gain energy
+        sample = mpv + xi * lam * 0.8
     mean_dE = dEdx_total(KE, mass, mat) * dx
     return float(np.clip(sample, mean_dE * 0.01, KE * 0.999))
 
 def birks(dE, dEdx_val, mat):
-    """
-    Birks' Law: measured scint signal = dE / (1 + kB·dE/dx).
-    Only active for scintillator (kB > 0).
-    Returns corrected (measured) energy deposit.
-    """
-    if mat.kB <= 0:
-        return dE
+    if mat.kB <= 0: return dE
     return dE / (1 + mat.kB * dEdx_val)
 
-# ── Propagation ───────────────────────────────────────────
-
 def propagate(KE0, mass, mat, thickness):
-    """
-    Propagate muon through layer of given thickness.
-
-    Returns:
-        KE_out    : kinetic energy after layer [MeV]
-                    (Landau-fluctuated for scint/Fe/Al;
-                     Birks-corrected for scintillator)
-        x_arr     : depth array [cm]
-        KE_arr    : KE profile along depth [MeV]
-        dE_mean   : mean energy loss (ODE, no fluctuation) [MeV]
-        dE_landau : Landau-sampled loss (what actually happened) [MeV]
-        dE_birks  : Birks-corrected measured signal [MeV]
-                    (= dE_landau for non-scintillator)
-    """
     if mat.rho < 1e-4 or thickness <= 0 or KE0 < 0.1:
         x = np.linspace(0, thickness, 10)
         return KE0, x, np.full(10, KE0), 0.0, 0.0, 0.0
 
-    # ── Mean ODE (Bethe-Bloch + Bremsstrahlung) ──────────
     def rhs(x, y):
         KE = y[0]
         if KE < 0.1: return [0.0]
@@ -186,12 +125,9 @@ def propagate(KE0, mass, mat, thickness):
     KE_mean = np.maximum(sol.sol(x_arr)[0], 0.0)
     dE_mean = KE0 - float(KE_mean[-1])
 
-    # ── Landau fluctuation sampled for whole layer ────────
     dE_landau = landau_sample(KE0, mass, mat, thickness)
     KE_landau = max(KE0 - dE_landau, 0.0)
 
-    # ── Build displayed KE profile:
-    #    scale the mean curve so its endpoint matches Landau sample
     if dE_mean > 0:
         scale   = dE_landau / dE_mean
         KE_disp = KE0 - (KE0 - KE_mean) * scale
@@ -199,14 +135,9 @@ def propagate(KE0, mass, mat, thickness):
         KE_disp = KE_mean.copy()
     KE_disp = np.maximum(KE_disp, 0.0)
 
-    # ── Birks correction (scintillator only) ─────────────
     dEdx_entry = dEdx_total(KE0, mass, mat)
     dE_birks   = birks(dE_landau, dEdx_entry, mat)
-
-    # KE_out: what the particle actually has after the layer
-    # For scintillator: particle loses dE_landau, but detector
-    # only SEES dE_birks — KE_out is still the physical value
-    KE_out = KE_landau
+    KE_out     = KE_landau
 
     return KE_out, x_arr, KE_disp, dE_mean, dE_landau, dE_birks
 
@@ -255,147 +186,71 @@ total_loss = KE0 - KE
 
 active = [s for s in stages if s["mat"] != "Air"]
 
-# ── Terminal report ────────────────────────────────────────
+# ── Terminal raporu ────────────────────────────────────────
 print(f"\n  p = {p_GeV} GeV/c  |  KE₀ = {KE0:.2f} MeV\n")
-print(f"  {'Component':<14} {'mat':>5} {'thick':>6}  "
-      f"{'KE_in':>8} {'KE_out':>8}  "
-      f"{'ΔE_mean':>8} {'ΔE_Landau':>10} {'ΔE_Birks':>10}")
-print(f"  {'-'*82}")
+print(f"  {'Bileşen':<16} {'Malzeme':>6} {'Kalınlık':>9}  "
+      f"{'KE_giriş':>9} {'KE_çıkış':>9}  "
+      f"{'ΔE_ort':>8} {'ΔE_Landau':>10} {'ΔE_Birks':>10}")
+print(f"  {'-'*88}")
 for s in active:
-    print(f"  {s['label']:<14} {s['mat']:>5} {s['thick']:>5.1f}cm  "
-          f"{s['KE_in']:>8.2f} {s['KE_out']:>8.2f}  "
+    birks_str = f"{s['dE_birks']:.3f}" if s["mat"] == "Scint" else "—"
+    print(f"  {s['label']:<16} {s['mat']:>6} {s['thick']:>7.1f} cm  "
+          f"{s['KE_in']:>9.2f} {s['KE_out']:>9.2f}  "
           f"{s['dE_mean']:>8.4f} {s['dE_landau']:>10.4f} "
-          f"{s['dE_birks']:>10.4f}")
-print(f"  {'-'*82}")
-print(f"  {'TOTAL':<14}                        "
-      f"                   {total_loss:>8.4f}\n")
+          f"{birks_str:>10}")
+print(f"  {'-'*88}")
+print(f"  {'TOPLAM KAYIP':<16}                                              "
+      f"           {total_loss:>8.4f} MeV\n")
 
-# ── Colours & styles ──────────────────────────────────────
-MAT_COLOR = {"Fe": "#4a90d9", "Al": "#ff6b35", "Scint": "#00d4ff"}
-DARK  = "#030812"; PANEL = "#060e1e"; BORDER = "#0d2a4a"
-DIM   = "#3a5a7a"; WHITE = "#e8f0f8"; YELLOW = "#ffff00"
+# ── Grafik ────────────────────────────────────────────────
+MAT_COLOR = {"Fe": "#2266cc", "Al": "#cc5500", "Scint": "#009999"}
 
-# ── Figure ────────────────────────────────────────────────
-fig  = plt.figure(figsize=(17, 6.5), facecolor=DARK)
-ax   = fig.add_axes([0.05, 0.12, 0.57, 0.78])
-ax_t = fig.add_axes([0.65, 0.08, 0.33, 0.86])
-ax_t.set_facecolor(PANEL); ax_t.set_xlim(0,1); ax_t.set_ylim(0,1)
-ax_t.set_xticks([]); ax_t.set_yticks([])
-for sp in ax_t.spines.values():
-    sp.set_edgecolor(BORDER); sp.set_linewidth(1.2)
-ax.set_facecolor(DARK)
+fig, ax = plt.subplots(figsize=(13, 5))
+fig.patch.set_facecolor("white")
+ax.set_facecolor("white")
 
 y_min = KE_arr[-1] - 50
 y_max = KE0 + 80
 ax.set_ylim(y_min, y_max)
 ax.set_xlim(z_arr[0] - 1, z_arr[-1] + 1)
 
-# Shading + labels
+# Malzeme bölgeleri
 for i, s in enumerate(active):
     col  = MAT_COLOR[s["mat"]]
     zmid = (s["z0"] + s["z1"]) / 2
-    ax.axvspan(s["z0"], s["z1"], color=col, alpha=0.15, zorder=1)
+    ax.axvspan(s["z0"], s["z1"], color=col, alpha=0.12, zorder=1)
     ax.axvline(s["z0"], color=col, lw=0.8, alpha=0.5, ls="--", zorder=2)
     ax.axvline(s["z1"], color=col, lw=0.8, alpha=0.5, ls="--", zorder=2)
-    y_lbl = y_max - 5 - (i % 2) * 14
+    y_lbl = y_max - 5 - (i % 2) * 18
     ax.text(zmid, y_lbl, s["label"],
-            ha="center", va="top", fontsize=9,
-            color=col, fontfamily="monospace", fontweight="bold",
-            bbox=dict(facecolor=DARK, edgecolor="none", pad=1.5))
+            ha="center", va="top", fontsize=8.5,
+            color=col, fontfamily="monospace", fontweight="bold")
 
-# KE curve (Landau-fluctuated + Bremsstrahlung)
-ax.plot(z_arr, KE_arr, color=WHITE, lw=2.5, zorder=5)
-ax.fill_between(z_arr, KE_arr, y_min, alpha=0.07, color=WHITE, zorder=4)
+# KE eğrisi — siyah çizgi
+ax.plot(z_arr, KE_arr, color="black", lw=2.0, zorder=5)
 
 ax.set_title(
-    f"Muon Energy Loss — T9 / BL4S   (p = {p_GeV} GeV/c)  "
-    f"[Bremsstrahlung + Landau + Birks active]",
-    color=WHITE, fontsize=10, fontfamily="monospace",
-    fontweight="bold", pad=10)
-ax.set_xlabel("z  (cm)", color=DIM, fontsize=10, fontfamily="monospace")
-ax.set_ylabel("Kinetic Energy  (MeV)", color=DIM, fontsize=10,
-              fontfamily="monospace")
-ax.tick_params(colors=DIM, labelsize=8)
-for sp in ax.spines.values(): sp.set_edgecolor(BORDER)
-ax.grid(color=BORDER, ls=":", alpha=0.35, zorder=0)
+    f"Muon Energy Loss — T9 / BL4S   (p = {p_GeV} GeV/c)",
+    color="black", fontsize=11, fontfamily="monospace", fontweight="bold", pad=10)
+ax.set_xlabel("z  (cm)", color="black", fontsize=10, fontfamily="monospace")
+ax.set_ylabel("Kinetic Energy  (MeV)", color="black", fontsize=10, fontfamily="monospace")
+ax.tick_params(colors="black", labelsize=8)
+for sp in ax.spines.values():
+    sp.set_edgecolor("#cccccc")
+ax.grid(color="#dddddd", ls=":", alpha=0.7, zorder=0)
 
+import matplotlib.patches as mpatches
 legend_items = [
-    mpatches.Patch(color=MAT_COLOR["Fe"],    label="Fe Filter  (15 cm)"),
-    mpatches.Patch(color=MAT_COLOR["Al"],    label="Al Absorber  (8 cm)"),
+    mpatches.Patch(color=MAT_COLOR["Fe"],    label="Fe Filter"),
+    mpatches.Patch(color=MAT_COLOR["Al"],    label="Al Absorber"),
     mpatches.Patch(color=MAT_COLOR["Scint"], label="Scintillator"),
 ]
-ax.legend(handles=legend_items, facecolor="#060e1e",
-          edgecolor=BORDER, labelcolor="#cccccc",
-          fontsize=8, loc="lower right", framealpha=0.95)
+ax.legend(handles=legend_items, facecolor="white",
+          edgecolor="#cccccc", labelcolor="black",
+          fontsize=8.5, loc="lower right", framealpha=0.95)
 
-# ── Table ─────────────────────────────────────────────────
-def tt(x, y, s, col=WHITE, size=7.8, fw="normal", ha="left"):
-    ax_t.text(x, y, s, ha=ha, va="center", fontsize=size,
-              color=col, fontfamily="monospace", fontweight=fw,
-              transform=ax_t.transAxes)
-
-def hl(y, lw=0.8):
-    ax_t.plot([0.02, 0.98], [y, y],
-              color=BORDER, lw=lw, transform=ax_t.transAxes)
-
-tt(0.5, 0.965, "Energy Loss Summary — Full Physics",
-   col=WHITE, size=9, fw="bold", ha="center")
-hl(0.935, lw=1.2)
-tt(0.5, 0.910, "BB + Sternheimer δ + Bremsstrahlung",
-   col=DIM, size=6.8, ha="center")
-tt(0.5, 0.891, "Landau fluctuations  |  Birks quenching",
-   col=DIM, size=6.8, ha="center")
-hl(0.872)
-
-# Column headers
-# Table has 6 columns: Component | Thick | KE_in | KE_out | ΔE_Landau | ΔE_Birks
-cx   = [0.03, 0.30, 0.44, 0.56, 0.68, 0.82]
-hdrs = ["Component", "Thick", "KE in", "KE out", "ΔE Landau", "ΔE Birks"]
-for h, x in zip(hdrs, cx):
-    tt(x, 0.847, h, col=DIM, size=7)
-hl(0.825)
-
-row_h = 0.093
-for i, s in enumerate(active):
-    y   = 0.825 - (i + 0.5) * row_h
-    col = MAT_COLOR[s["mat"]]
-    ax_t.fill_between([0.01, 0.99],
-                      [y - row_h*0.46]*2, [y + row_h*0.46]*2,
-                      color=col, alpha=0.08,
-                      transform=ax_t.transAxes)
-    # ΔE_Birks only meaningful for scintillator
-    birks_str = (f"{s['dE_birks']:.3f}"
-                 if s["mat"] == "Scint"
-                 else "—")
-    vals = [s["label"], f"{s['thick']:.1f}cm",
-            f"{s['KE_in']:.1f}", f"{s['KE_out']:.1f}",
-            f"{s['dE_landau']:.3f}", birks_str]
-    for j, (v, x) in enumerate(zip(vals, cx)):
-        highlight = j >= 4
-        tc = col   if highlight else WHITE
-        fw = "bold" if highlight else "normal"
-        tt(x, y, v, col=tc, size=7.5, fw=fw)
-
-y_sep = 0.825 - len(active) * row_h - 0.01
-hl(y_sep)
-
-y_tot = y_sep - row_h * 0.65
-tt(cx[0], y_tot, "TOTAL", col=WHITE, size=9, fw="bold")
-tt(cx[4], y_tot, f"{total_loss:.2f} MeV",
-   col=YELLOW, size=9, fw="bold")
-
-# Footer note
-y_fn = y_tot - row_h * 1.1
-tt(0.03, y_fn,
-   "ΔE Landau: stochastic sample (1 event)",
-   col=DIM, size=6.5)
-tt(0.03, y_fn - 0.055,
-   "ΔE Birks: scint measured signal (— = n/a)",
-   col=DIM, size=6.5)
-tt(0.5, 0.022, "All energies in MeV",
-   col=DIM, size=6.8, ha="center")
-
-plt.savefig("energy_loss_v2.png", dpi=150,
-            bbox_inches="tight", facecolor=DARK)
-print("Saved: energy_loss_v2.png")
+plt.tight_layout()
+plt.savefig("muon_energy_loss.png",
+            dpi=180, bbox_inches="tight", facecolor="white")
+print("Saved: muon_energy_loss.png")
 plt.show()
