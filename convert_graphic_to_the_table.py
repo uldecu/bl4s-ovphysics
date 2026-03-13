@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 Muon Energy Loss Table -- T9 / BL4S
 p = 5 GeV/c
@@ -114,7 +114,7 @@ def propagate(KE0, mass, mat, thickness):
     dE_birks  = birks(dE_landau, dEdx_total(KE0, mass, mat), mat)
     return KE_out, dE_mean, dE_landau, dE_birks
 
-# ── Setup
+# ── Setup ─────────────────────────────────────────────────
 p_GeV = 5.0
 KE0   = np.sqrt((p_GeV*1000)**2 + MUON_MASS**2) - MUON_MASS
 
@@ -149,7 +149,7 @@ for label, mat_name, thick in SETUP:
 active     = [s for s in stages if s["mat"] != "Air"]
 total_loss = KE0 - KE
 
-# ── Table
+# ── Table ─────────────────────────────────────────────────
 MAT_COLOR = {"Fe": "#445566", "Al": "#445566", "Scint": "#445566"}
 HDR_COL   = "#445566"
 ALT_COL   = "#f4f7ff"
@@ -240,5 +240,4 @@ plt.tight_layout()
 plt.savefig("muon_energy_table.png", dpi=180,
             bbox_inches="tight", facecolor="white")
 print("Saved: muon_energy_table.png")
-
 plt.show()
