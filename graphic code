@@ -1,10 +1,4 @@
 
-"""
-Muon Energy Loss — T9 / BL4S
-p = 5 GeV/c
-White background, black line, no table panel.
-"""
-
 import numpy as np
 from scipy import integrate
 import matplotlib.pyplot as plt
@@ -226,7 +220,7 @@ for i, s in enumerate(active):
             ha="center", va="top", fontsize=8.5,
             color=col, fontfamily="monospace", fontweight="bold")
 
-# KE eğrisi — siyah çizgi
+# KE
 ax.plot(z_arr, KE_arr, color="black", lw=2.0, zorder=5)
 
 ax.set_title(
