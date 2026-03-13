@@ -235,4 +235,3 @@ plt.savefig("muon_energy_table.png", dpi=180,
             bbox_inches="tight", facecolor="white")
 print("Saved: muon_energy_table.png")
 plt.show()
-
