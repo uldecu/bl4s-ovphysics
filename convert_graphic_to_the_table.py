@@ -1,9 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Muon Energy Loss Table -- T9 / BL4S
-p = 5 GeV/c
-Standalone table -- no plot.
-"""
 
 import numpy as np
 from scipy import integrate
@@ -241,3 +235,4 @@ plt.savefig("muon_energy_table.png", dpi=180,
             bbox_inches="tight", facecolor="white")
 print("Saved: muon_energy_table.png")
 plt.show()
+
